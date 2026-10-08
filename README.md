@@ -26,7 +26,7 @@ Railway detecta Node.js, corre `npm install` + `npm start` automáticamente.
 
 | Variable | Default | Descripción |
 |---|---|---|
-| `PORT` | 3000 | Puerto (Railway lo asigna solo) |
+| `PORT` | 8080 | Puerto (Railway lo asigna solo) |
 | `REFRESH_HOURS` | 6 | Cada cuántas horas refresca KEV/EPSS desde internet |
 
 ## Endpoints
