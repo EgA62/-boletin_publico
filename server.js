@@ -185,32 +185,87 @@ app.options('*', (_req, res) => res.sendStatus(204));
 
 // ── Lectura: publica ─────────────────────────────────────────────────────────
 
-app.get('/', (_req, res) => {
-  const bols = (metaBase.boletines || []).map((b) => b.boletin);
-  res.json({
-    nombre: 'feed-cve-kev',
-    descripcion: 'Feed publico de CVE del boletin Microsoft con cruce CISA KEV y EPSS',
-    totalCves: datosBase.length,
-    boletines: bols,
-    ultimoRefresh: ultimoRefresh,
-    ultimaActualizacion,
-    auth: API_TOKEN ? 'POST requiere Authorization: Bearer <token>' : 'sin proteccion (definir API_TOKEN en env)',
-    endpoints: {
-      lectura: {
-        'GET /cves?boletin=': 'feed completo; sin boletin = todos',
-        'GET /cves/feed.json?boletin=': 'alias',
-        'GET /kev?boletin=': 'solo CVEs en CISA KEV',
-        'GET /stats?boletin=': 'resumen numerico',
-        'GET /boletines': 'lista de boletines disponibles',
-        'GET /salud': 'estado del servicio',
-        'GET /descargar': 'descarga datos.json crudo (requiere token)',
-      },
-      escritura: {
-        'POST /actualizar': 'empuja datos nuevos (body = {meta, cves}); requiere token',
-        'POST /refresh': 'forzar actualizacion de KEV/EPSS; requiere token',
-      },
-    },
-  });
+app.get('/', (req, res) => {
+  const accept = req.headers.accept || '';
+  if (accept.includes('application/json') && !accept.includes('text/html')) {
+    const bols = (metaBase.boletines || []).map((b) => b.boletin);
+    return res.json({
+      nombre: 'feed-cve-kev', totalCves: datosBase.length, boletines: bols,
+      ultimoRefresh, ultimaActualizacion,
+      endpoints: { 'GET /cves?boletin=': 'feed', 'GET /kev': 'solo KEV', 'GET /stats': 'resumen', 'GET /boletines': 'lista' },
+    });
+  }
+  const bols = metaBase.boletines || [];
+  const todos = datosBase.map(enriquecer);
+  const enKev = todos.filter((c) => c.kev.enKev).length;
+  const explotados = todos.filter((c) => c.explotado || c.kev.enKev).length;
+  const opcionesBol = bols.map((b) => `<option value="${b.boletin}">${b.boletin} (${b.totalCve} CVEs)</option>`).join('');
+  res.type('html').send(`<!doctype html><html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Feed CVE + KEV</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--card:#f7f7f8;--brd:#e0e0e0;--accent:#800080;--accent2:#6b006b;--badge:#eee;--kev:#c0392b;--ok:#27ae60}
+@media(prefers-color-scheme:dark){:root{--bg:#18181b;--fg:#e4e4e7;--card:#27272a;--brd:#3f3f46;--badge:#3f3f46;--accent:#c084fc;--accent2:#a855f7}}
+*{box-sizing:border-box;margin:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--fg);line-height:1.5;padding:0 16px}
+.wrap{max-width:720px;margin:0 auto;padding:2rem 0 3rem}
+h1{font-size:1.5rem;font-weight:700;margin-bottom:.25rem}
+.sub{color:#888;font-size:.875rem;margin-bottom:1.5rem}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin-bottom:1.5rem}
+.card{background:var(--card);border:1px solid var(--brd);border-radius:10px;padding:1rem;text-align:center}
+.card .n{font-size:1.75rem;font-weight:700}
+.card .l{font-size:.75rem;color:#888;text-transform:uppercase;letter-spacing:.04em}
+.card.kev .n{color:var(--kev)}
+.card.ok .n{color:var(--ok)}
+.sep{border:0;border-top:1px solid var(--brd);margin:1.5rem 0}
+h2{font-size:1.1rem;font-weight:600;margin-bottom:.75rem}
+.row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem}
+select,button{font:inherit;border-radius:8px;padding:.5rem 1rem;border:1px solid var(--brd);background:var(--card);color:var(--fg);cursor:pointer}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+button.primary:hover{background:var(--accent2)}
+.ep{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem}
+.ep a{font-size:.8rem;padding:.35rem .7rem;border-radius:6px;background:var(--badge);color:var(--fg);text-decoration:none;font-family:monospace}
+.ep a:hover{background:var(--accent);color:#fff}
+.ts{font-size:.75rem;color:#888;margin-top:1.5rem}
+</style></head><body><div class="wrap">
+<h1>Feed CVE + KEV</h1>
+<p class="sub">Boletin Microsoft &middot; cruce CISA KEV y EPSS &middot; actualizado cada 6h</p>
+<div class="cards">
+  <div class="card"><div class="n">${datosBase.length}</div><div class="l">CVEs totales</div></div>
+  <div class="card"><div class="n">${bols.length}</div><div class="l">Boletines</div></div>
+  <div class="card kev"><div class="n">${enKev}</div><div class="l">En CISA KEV</div></div>
+  <div class="card"><div class="n">${explotados}</div><div class="l">Explotados</div></div>
+</div>
+<hr class="sep">
+<h2>Descargar</h2>
+<div class="row">
+  <select id="bol"><option value="">Todos los boletines</option>${opcionesBol}</select>
+  <button class="primary" onclick="dl('cves')">Descargar JSON</button>
+  <button onclick="dl('kev')">Solo KEV</button>
+  <button onclick="dl('stats')">Resumen</button>
+</div>
+<hr class="sep">
+<h2>Endpoints</h2>
+<div class="ep">
+  <a href="/cves">/cves</a>
+  <a href="/kev">/kev</a>
+  <a href="/stats">/stats</a>
+  <a href="/boletines">/boletines</a>
+  <a href="/salud">/salud</a>
+  <a href="/cves/feed.json">/cves/feed.json</a>
+</div>
+<p class="ts">Ultimo refresh KEV/EPSS: ${ultimoRefresh || '—'}<br>Ultima actualizacion de datos: ${ultimaActualizacion || '—'}</p>
+</div>
+<script>
+function dl(ep){
+  const b=document.getElementById('bol').value;
+  const q=b?'?boletin='+encodeURIComponent(b):'';
+  const url='/'+ep+q;
+  const a=document.createElement('a');
+  a.href=url;a.download=ep+(b?'_'+b:'')+'.json';
+  document.body.appendChild(a);a.click();a.remove();
+}
+</script></body></html>`);
 });
 
 function serveFeed(req, res) {
