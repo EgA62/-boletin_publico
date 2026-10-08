@@ -5,55 +5,65 @@ Feed público del boletín Microsoft con cruce diario contra CISA KEV y EPSS.
 ## Deploy en Railway
 
 ```bash
-# 1. Exportar CVEs del boletin actual desde la BDD local
-node feed-publico/exportar_datos.js 2026-Sep
-
-# 2. Ir al directorio e inicializar el repo
 cd feed-publico
-git init
-git add -A
-git commit -m "Feed CVE+KEV inicial"
-
-# 3. Deployer en Railway
-railway login
-railway init
-railway up
+git init && git add -A && git commit -m "init"
+railway login && railway init && railway up
 ```
 
-Railway detecta Node.js, corre `npm install` + `npm start` automáticamente.
-
-## Variables de entorno (opcionales)
+## Variables de entorno en Railway
 
 | Variable | Default | Descripción |
 |---|---|---|
 | `PORT` | 8080 | Puerto (Railway lo asigna solo) |
 | `REFRESH_HOURS` | 6 | Cada cuántas horas refresca KEV/EPSS desde internet |
+| `API_TOKEN` | — | Token para proteger los endpoints de escritura. **Obligatorio en producción** |
+
+## Autenticación
+
+- **Lectura** (GET): pública, sin token
+- **Escritura** (POST /actualizar, /refresh) y descarga cruda (GET /descargar): requiere `Authorization: Bearer <token>`
+
+El token se define en Railway como variable de entorno `API_TOKEN`.
 
 ## Endpoints
 
-| Ruta | Descripción |
-|---|---|
-| `GET /` | Índice con endpoints disponibles |
-| `GET /cves` | Feed completo de CVEs con KEV y EPSS |
-| `GET /cves/feed.json` | Alias (extensión explícita) |
-| `GET /kev` | Solo CVEs que están en CISA KEV |
-| `GET /stats` | Resumen numérico (conteos por severidad, tipo, criticidad) |
-| `GET /salud` | Estado del servicio |
-| `POST /refresh` | Forzar actualización de KEV/EPSS |
+| Ruta | Auth | Descripción |
+|---|---|---|
+| `GET /` | — | Índice con endpoints disponibles |
+| `GET /cves?boletin=` | — | Feed completo; sin boletin = todos |
+| `GET /cves/feed.json` | — | Alias |
+| `GET /kev?boletin=` | — | Solo CVEs en CISA KEV |
+| `GET /stats?boletin=` | — | Resumen numérico |
+| `GET /boletines` | — | Boletines disponibles |
+| `GET /salud` | — | Estado del servicio |
+| `GET /descargar` | Token | Descarga datos.json crudo |
+| `POST /actualizar` | Token | Empuja datos nuevos (body JSON) |
+| `POST /refresh` | Token | Forzar refresh de KEV/EPSS |
 
-## Actualizar el boletín
+## Actualizar datos desde tu máquina
 
-Cuando salga un nuevo Patch Tuesday:
+### Opción 1: Script directo (sin git push)
 
 ```bash
-# Desde la raiz del proyecto principal
-node feed-publico/exportar_datos.js 2026-Oct
+FEED_TOKEN=tu_token node feed-publico/actualizar_remoto.js --todos
+```
 
-# Commit y push (Railway redeploya automáticamente)
-cd feed-publico
-git add datos.json
-git commit -m "Boletin 2026-Oct"
-git push
+Te pregunta qué boletín(es) exportar, los saca de `boletin.db` y los empuja al servicio Railway. Los datos se actualizan en caliente, sin redeploy.
+
+### Opción 2: Git push (redeploy completo)
+
+```bash
+node feed-publico/exportar_datos.js --todos
+cd feed-publico && git add datos.json && git commit -m "Oct" && git push
+```
+
+### Opción 3: curl directo
+
+```bash
+curl -X POST https://tu-app.railway.app/actualizar \
+  -H "Authorization: Bearer tu_token" \
+  -H "Content-Type: application/json" \
+  -d @feed-publico/datos.json
 ```
 
 ## Consumir el feed
@@ -67,5 +77,12 @@ for cve in feed["cves"]:
 ```
 
 ```bash
+# Solo los que están en KEV
 curl -s https://tu-app.railway.app/kev | jq '.cves[] | {cve, plazo: .kev.plazo}'
+
+# Filtrar por boletín
+curl -s "https://tu-app.railway.app/cves?boletin=2026-Sep" | jq '.meta.total'
+
+# Forzar refresh de KEV/EPSS
+curl -X POST https://tu-app.railway.app/refresh -H "Authorization: Bearer tu_token"
 ```

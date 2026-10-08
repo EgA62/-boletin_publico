@@ -1,19 +1,42 @@
 const express = require('express');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const PORT = Number(process.env.PORT || 8080);
 const REFRESH_MS = Number(process.env.REFRESH_HOURS || 6) * 3600 * 1000;
+const API_TOKEN = process.env.API_TOKEN || null;
 const KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
 const EPSS_URL = 'https://api.first.org/data/v1/epss?cve=';
 
 // ── Estado en memoria ────────────────────────────────────────────────────────
-let datosBase = [];       // todos los CVEs (multi-boletin)
-let metaBase = {};        // meta global (boletines[], totalCves)
-let kevMapa = null;       // Map<cve, {nombre, fecha, plazo, ransomware, accion}>
-let epssMapa = null;      // Map<cve, {epss, percentil}>
+let datosBase = [];
+let metaBase = {};
+let kevMapa = null;
+let epssMapa = null;
 let ultimoRefresh = null;
+let ultimaActualizacion = null;
 let refreshEnCurso = false;
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+// Lectura: publica. Escritura (POST /actualizar, /refresh, /descargar):
+// requiere Authorization: Bearer <token> si API_TOKEN esta definido.
+function authRequerido(req, res, next) {
+  if (!API_TOKEN) return next();
+  const h = req.headers.authorization || '';
+  const token = h.startsWith('Bearer ') ? h.slice(7).trim() : null;
+  if (!token || !safeCompare(token, API_TOKEN)) {
+    return res.status(401).json({ error: 'Token invalido o ausente. Envia Authorization: Bearer <token>' });
+  }
+  next();
+}
+function safeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
 
 // ── Cargar datos base ────────────────────────────────────────────────────────
 function cargarDatos() {
@@ -25,8 +48,18 @@ function cargarDatos() {
   const raw = JSON.parse(fs.readFileSync(ruta, 'utf8'));
   datosBase = raw.cves || [];
   metaBase = raw.meta || {};
+  ultimaActualizacion = metaBase.exportado || null;
   const bols = metaBase.boletines || [];
   console.log(`Cargados ${datosBase.length} CVEs de ${bols.length} boletin(es): ${bols.map((b) => b.boletin).join(', ') || '?'}`);
+}
+
+function recargarDesdePayload(payload) {
+  datosBase = payload.cves || [];
+  metaBase = payload.meta || {};
+  ultimaActualizacion = new Date().toISOString();
+  fs.writeFileSync(path.join(__dirname, 'datos.json'), JSON.stringify(payload, null, 2), 'utf8');
+  const bols = metaBase.boletines || [];
+  console.log(`[${ultimaActualizacion}] Datos actualizados: ${datosBase.length} CVEs de ${bols.length} boletin(es)`);
 }
 
 // ── KEV desde CISA ───────────────────────────────────────────────────────────
@@ -110,7 +143,6 @@ function enriquecer(cve) {
   };
 }
 
-// Filtrar por boletin (query ?boletin=). Sin filtro = todos.
 function filtrar(req) {
   const b = req.query.boletin;
   const base = b ? datosBase.filter((c) => c.boletin === b) : datosBase;
@@ -127,6 +159,7 @@ function buildMeta(cves, filtro) {
     filtro: filtro || null,
     generado: new Date().toISOString(),
     ultimoRefreshKev: ultimoRefresh,
+    ultimaActualizacion,
     total: cves.length,
     enKev: enKev.length,
     explotados: explotados.length,
@@ -137,16 +170,20 @@ function buildMeta(cves, filtro) {
 // ── Express ──────────────────────────────────────────────────────────────────
 const app = express();
 app.disable('x-powered-by');
+app.use(express.json({ limit: '10mb' }));
 
 app.use((_req, res, next) => {
   res.set({
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS, POST',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Cache-Control': 'public, max-age=300',
   });
   next();
 });
+app.options('*', (_req, res) => res.sendStatus(204));
+
+// ── Lectura: publica ─────────────────────────────────────────────────────────
 
 app.get('/', (_req, res) => {
   const bols = (metaBase.boletines || []).map((b) => b.boletin);
@@ -156,14 +193,22 @@ app.get('/', (_req, res) => {
     totalCves: datosBase.length,
     boletines: bols,
     ultimoRefresh: ultimoRefresh,
+    ultimaActualizacion,
+    auth: API_TOKEN ? 'POST requiere Authorization: Bearer <token>' : 'sin proteccion (definir API_TOKEN en env)',
     endpoints: {
-      'GET /cves?boletin=': 'feed completo; sin boletin = todos',
-      'GET /cves/feed.json?boletin=': 'alias',
-      'GET /kev?boletin=': 'solo CVEs en CISA KEV',
-      'GET /stats?boletin=': 'resumen numerico',
-      'GET /boletines': 'lista de boletines disponibles',
-      'GET /salud': 'estado del servicio',
-      'POST /refresh': 'forzar actualizacion de KEV/EPSS',
+      lectura: {
+        'GET /cves?boletin=': 'feed completo; sin boletin = todos',
+        'GET /cves/feed.json?boletin=': 'alias',
+        'GET /kev?boletin=': 'solo CVEs en CISA KEV',
+        'GET /stats?boletin=': 'resumen numerico',
+        'GET /boletines': 'lista de boletines disponibles',
+        'GET /salud': 'estado del servicio',
+        'GET /descargar': 'descarga datos.json crudo (requiere token)',
+      },
+      escritura: {
+        'POST /actualizar': 'empuja datos nuevos (body = {meta, cves}); requiere token',
+        'POST /refresh': 'forzar actualizacion de KEV/EPSS; requiere token',
+      },
     },
   });
 });
@@ -215,19 +260,43 @@ app.get('/salud', (_req, res) => {
     totalCves: datosBase.length,
     boletines: (metaBase.boletines || []).length,
     ultimoRefresh: ultimoRefresh,
+    ultimaActualizacion,
     refreshCadaHoras: REFRESH_MS / 3600000,
+    authActivo: !!API_TOKEN,
     uptime: Math.round(process.uptime()),
   });
 });
 
-app.post('/refresh', async (_req, res) => {
+// ── Escritura: requiere token ────────────────────────────────────────────────
+
+app.post('/actualizar', authRequerido, async (req, res) => {
+  const body = req.body;
+  if (!body || !Array.isArray(body.cves) || !body.meta) {
+    return res.status(400).json({ error: 'Body debe ser {meta: {boletines: [...]}, cves: [...]}' });
+  }
+  recargarDesdePayload(body);
+  await refrescar();
+  res.json({
+    ok: true,
+    mensaje: `Actualizados ${datosBase.length} CVEs de ${(metaBase.boletines || []).length} boletin(es).`,
+    ultimaActualizacion,
+    ultimoRefresh,
+  });
+});
+
+app.post('/refresh', authRequerido, async (_req, res) => {
   if (refreshEnCurso) return res.json({ mensaje: 'Refresh ya en curso.' });
   await refrescar();
-  res.json({ mensaje: 'Refresh completado.', ultimoRefresh });
+  res.json({ ok: true, mensaje: 'Refresh completado.', ultimoRefresh });
+});
+
+app.get('/descargar', authRequerido, (_req, res) => {
+  res.json({ meta: metaBase, cves: datosBase });
 });
 
 // ── Arranque ─────────────────────────────────────────────────────────────────
 cargarDatos();
+if (!API_TOKEN) console.warn('[AVISO] API_TOKEN no definido: endpoints de escritura sin proteccion.');
 refrescar().then(() => {
   app.listen(PORT, () => {
     console.log(`Feed CVE+KEV escuchando en puerto ${PORT}`);
