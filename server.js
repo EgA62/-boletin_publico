@@ -257,6 +257,7 @@ app.get('/', (req, res) => {
   res.type('html').send(`<!doctype html><html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Feed CVE + KEV</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{--bg:#fff;--fg:#1a1a1a;--card:#f7f7f8;--brd:#e0e0e0;--accent:#800080;--accent2:#6b006b;--badge:#eee;--kev:#c0392b;--ok:#27ae60}
 @media(prefers-color-scheme:dark){:root{--bg:#18181b;--fg:#e4e4e7;--card:#27272a;--brd:#3f3f46;--badge:#3f3f46;--accent:#c084fc;--accent2:#a855f7}}
@@ -283,6 +284,26 @@ button.primary:hover{background:var(--accent2)}
 .ts{font-size:.75rem;color:#888;margin-top:1.5rem}
 code{font-size:.8rem;background:var(--badge);padding:.15rem .4rem;border-radius:4px}
 .api{margin-top:1rem;font-size:.85rem;color:#888}
+.drop{border:2px dashed var(--brd);border-radius:12px;padding:2rem;text-align:center;cursor:pointer;transition:border-color .2s,background .2s}
+.drop:hover,.drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.drop input{display:none}
+.drop .ico{font-size:2rem;margin-bottom:.5rem}
+.drop p{font-size:.9rem;color:#888}
+#cmpStatus{margin-top:.75rem;font-size:.85rem}
+#cmpCards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.5rem;margin:1rem 0}
+#cmpCards .card{padding:.75rem}
+#cmpCards .card .n{font-size:1.4rem}
+#cmpTable{width:100%;border-collapse:collapse;font-size:.8rem;margin:1rem 0;display:none}
+#cmpTable th{text-align:left;padding:.4rem .5rem;border-bottom:2px solid var(--brd);position:sticky;top:0;background:var(--bg)}
+#cmpTable td{padding:.35rem .5rem;border-bottom:1px solid var(--brd);white-space:nowrap}
+#cmpTable tr:hover td{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.tWrap{max-height:400px;overflow:auto;border:1px solid var(--brd);border-radius:8px}
+.badge{display:inline-block;font-size:.7rem;padding:.1rem .4rem;border-radius:4px;font-weight:600}
+.badge.si{background:#c0392b;color:#fff}
+.badge.no{background:var(--badge);color:#888}
+.badge.ms{background:var(--accent);color:#fff}
+.badge.fuera{background:var(--badge);color:#888}
+#cmpBtns{display:none;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem}
 </style></head><body><div class="wrap">
 <h1>Feed CVE + KEV</h1>
 <p class="sub">Boletin Microsoft &middot; cruce CISA KEV y EPSS &middot; actualizado cada 6h</p>
@@ -300,6 +321,24 @@ code{font-size:.8rem;background:var(--badge);padding:.15rem .4rem;border-radius:
   <button onclick="dl('kev')">Solo KEV</button>
   <button onclick="dl('stats')">Resumen</button>
 </div>
+<hr class="sep">
+<h2>Comparar Excel</h2>
+<p style="font-size:.85rem;color:#888;margin-bottom:.75rem">Sube un Excel con CVE-IDs y en segundos sabes cuales estan en boletines Microsoft, KEV y EPSS.</p>
+<div class="drop" id="dropZone" onclick="document.getElementById('xlFile').click()">
+  <div class="ico">&#128196;</div>
+  <p>Arrastra un .xlsx / .csv o haz clic para seleccionar</p>
+  <input type="file" id="xlFile" accept=".xlsx,.xls,.csv">
+</div>
+<div id="cmpStatus"></div>
+<div id="cmpCards"></div>
+<div id="cmpBtns">
+  <button class="primary" onclick="exportarXlsx()">Descargar Excel enriquecido</button>
+  <button onclick="exportarJson()">Descargar JSON</button>
+  <button onclick="limpiar()">Limpiar</button>
+</div>
+<div class="tWrap"><table id="cmpTable"><thead><tr>
+  <th>CVE</th><th>Microsoft</th><th>Severidad</th><th>CVSS</th><th>KEV</th><th>EPSS</th><th>Producto</th>
+</tr></thead><tbody id="cmpBody"></tbody></table></div>
 <hr class="sep">
 <h2>Endpoints</h2>
 <div class="ep">
@@ -324,6 +363,133 @@ function dl(ep){
   const a=document.createElement('a');
   a.href=url;a.download=ep+(b?'_'+b:'')+'.json';
   document.body.appendChild(a);a.click();a.remove();
+}
+
+/* ── Comparar Excel ──────────────────────────────────────────────────────── */
+let ultimoResultado=null;
+const dropZone=document.getElementById('dropZone');
+const xlFile=document.getElementById('xlFile');
+const status=document.getElementById('cmpStatus');
+const cardsDiv=document.getElementById('cmpCards');
+const tabla=document.getElementById('cmpTable');
+const tbody=document.getElementById('cmpBody');
+const btns=document.getElementById('cmpBtns');
+
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('over')});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('over'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('over');if(e.dataTransfer.files.length)procesar(e.dataTransfer.files[0])});
+xlFile.addEventListener('change',()=>{if(xlFile.files.length)procesar(xlFile.files[0])});
+
+function extraerCves(wb){
+  const rx=/CVE-\\d{4}-\\d{4,}/gi;
+  const set=new Set();
+  for(const name of wb.SheetNames){
+    const ws=wb.Sheets[name];
+    const csv=XLSX.utils.sheet_to_csv(ws);
+    let m;while((m=rx.exec(csv))!==null)set.add(m[0].toUpperCase());
+  }
+  return[...set];
+}
+
+async function procesar(file){
+  const t0=performance.now();
+  status.textContent='Leyendo archivo...';
+  cardsDiv.innerHTML='';tbody.innerHTML='';tabla.style.display='none';btns.style.display='none';
+  try{
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf,{type:'array'});
+    const ids=extraerCves(wb);
+    if(!ids.length){status.textContent='No se encontraron CVE-IDs en el archivo.';return}
+    status.textContent='Consultando '+ids.length+' CVEs...';
+    const r=await fetch('/buscar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cves:ids})});
+    const data=await r.json();
+    const ms=Math.round(performance.now()-t0);
+    ultimoResultado=data;
+    const enKev=data.cves.filter(c=>c.kev&&c.kev.enKev).length;
+    const expl=data.cves.filter(c=>c.explotado||c.kev&&c.kev.enKev).length;
+    status.innerHTML='<strong>'+ids.length+'</strong> CVEs procesados en <strong>'+ms+'ms</strong>';
+    cardsDiv.innerHTML=
+      '<div class="card"><div class="n">'+ids.length+'</div><div class="l">CVEs en archivo</div></div>'+
+      '<div class="card" style="border-color:var(--accent)"><div class="n" style="color:var(--accent)">'+data.total+'</div><div class="l">En Microsoft</div></div>'+
+      '<div class="card"><div class="n" style="color:#888">'+data.noEncontrados+'</div><div class="l">No encontrados</div></div>'+
+      '<div class="card kev"><div class="n">'+enKev+'</div><div class="l">En KEV</div></div>'+
+      '<div class="card"><div class="n">'+expl+'</div><div class="l">Explotados</div></div>';
+    renderTabla(data,ids);
+    btns.style.display='flex';
+  }catch(e){status.textContent='Error: '+e.message}
+}
+
+function renderTabla(data,todosIds){
+  tbody.innerHTML='';
+  const mapa=new Map();
+  for(const c of data.cves)mapa.set(c.cve,c);
+  const filas=todosIds.map(id=>{
+    const c=mapa.get(id);
+    if(c)return{id,ms:true,sev:c.severidad||'',cvss:c.cvss??'',kev:c.kev&&c.kev.enKev,epss:c.epss??'',prod:c.producto||'',obj:c};
+    return{id,ms:false,sev:'',cvss:'',kev:false,epss:'',prod:'',obj:null};
+  });
+  filas.sort((a,b)=>{
+    if(a.kev!==b.kev)return a.kev?-1:1;
+    if(a.ms!==b.ms)return a.ms?-1:1;
+    return(b.cvss||0)-(a.cvss||0);
+  });
+  const max=Math.min(filas.length,500);
+  for(let i=0;i<max;i++){
+    const f=filas[i];
+    const tr=document.createElement('tr');
+    tr.innerHTML=
+      '<td><strong>'+f.id+'</strong></td>'+
+      '<td>'+(f.ms?'<span class="badge ms">SI</span>':'<span class="badge fuera">NO</span>')+'</td>'+
+      '<td>'+f.sev+'</td>'+
+      '<td>'+(f.cvss||'—')+'</td>'+
+      '<td>'+(f.kev?'<span class="badge si">KEV</span>':'<span class="badge no">—</span>')+'</td>'+
+      '<td>'+(f.epss!==''&&f.epss!==null?(f.epss*100).toFixed(2)+'%':'—')+'</td>'+
+      '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+f.prod+'</td>';
+    tbody.appendChild(tr);
+  }
+  if(filas.length>500){
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td colspan="7" style="text-align:center;color:#888;padding:.75rem">... '+(filas.length-500)+' mas (descarga el Excel para ver todos)</td>';
+    tbody.appendChild(tr);
+  }
+  tabla.style.display='table';
+}
+
+function exportarXlsx(){
+  if(!ultimoResultado)return;
+  const rows=ultimoResultado.cves.map(c=>({
+    CVE:c.cve,Titulo:c.titulo||'',Producto:c.producto||'',
+    Severidad:c.severidad||'',CVSS:c.cvss??'',Tipo:c.tipo||'',
+    Explotado:c.explotado?'SI':'NO',Divulgado:c.divulgado?'SI':'NO',
+    EnKEV:c.kev&&c.kev.enKev?'SI':'NO',
+    KEV_Plazo:c.kev&&c.kev.plazo||'',
+    KEV_Ransomware:c.kev&&c.kev.ransomware?'SI':'NO',
+    EPSS:c.epss??'',EPSS_Percentil:c.epssPercentil??'',
+    Boletin:c.boletin||''
+  }));
+  if(ultimoResultado.faltantes&&ultimoResultado.faltantes.length){
+    for(const id of ultimoResultado.faltantes){
+      rows.push({CVE:id,Titulo:'NO ENCONTRADO EN MICROSOFT',Producto:'',Severidad:'',CVSS:'',Tipo:'',Explotado:'',Divulgado:'',EnKEV:'',KEV_Plazo:'',KEV_Ransomware:'',EPSS:'',EPSS_Percentil:'',Boletin:''});
+    }
+  }
+  const ws=XLSX.utils.json_to_sheet(rows);
+  const cols=[{wch:18},{wch:40},{wch:30},{wch:10},{wch:6},{wch:20},{wch:9},{wch:9},{wch:6},{wch:12},{wch:14},{wch:8},{wch:12},{wch:10}];
+  ws['!cols']=cols;
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Comparacion');
+  XLSX.writeFile(wb,'comparacion_cve.xlsx');
+}
+
+function exportarJson(){
+  if(!ultimoResultado)return;
+  const blob=new Blob([JSON.stringify(ultimoResultado,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='comparacion_cve.json';
+  document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(a.href);
+}
+
+function limpiar(){
+  ultimoResultado=null;status.textContent='';cardsDiv.innerHTML='';
+  tbody.innerHTML='';tabla.style.display='none';btns.style.display='none';xlFile.value='';
 }
 </script></body></html>`);
 });
