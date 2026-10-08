@@ -8,10 +8,10 @@ const KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_
 const EPSS_URL = 'https://api.first.org/data/v1/epss?cve=';
 
 // ── Estado en memoria ────────────────────────────────────────────────────────
-let datosBase = [];     // CVEs crudos del boletin (de datos.json)
-let metaBase = {};      // meta del boletin
-let kevMapa = null;     // Map<cve, {nombre, fecha, plazo, ransomware, accion}>
-let epssMapa = null;    // Map<cve, {epss, percentil}>
+let datosBase = [];       // todos los CVEs (multi-boletin)
+let metaBase = {};        // meta global (boletines[], totalCves)
+let kevMapa = null;       // Map<cve, {nombre, fecha, plazo, ransomware, accion}>
+let epssMapa = null;      // Map<cve, {epss, percentil}>
 let ultimoRefresh = null;
 let refreshEnCurso = false;
 
@@ -25,7 +25,8 @@ function cargarDatos() {
   const raw = JSON.parse(fs.readFileSync(ruta, 'utf8'));
   datosBase = raw.cves || [];
   metaBase = raw.meta || {};
-  console.log(`Cargados ${datosBase.length} CVEs del boletin ${metaBase.boletin || '?'}`);
+  const bols = metaBase.boletines || [];
+  console.log(`Cargados ${datosBase.length} CVEs de ${bols.length} boletin(es): ${bols.map((b) => b.boletin).join(', ') || '?'}`);
 }
 
 // ── KEV desde CISA ───────────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ async function refrescar() {
     console.warn('  KEV fallo:', e.message);
   }
   try {
-    const ids = datosBase.map((c) => c.cve);
+    const ids = [...new Set(datosBase.map((c) => c.cve))];
     epssMapa = await descargarEpss(ids);
     console.log(`  EPSS: ${epssMapa.size} scores`);
   } catch (e) {
@@ -109,22 +110,27 @@ function enriquecer(cve) {
   };
 }
 
-function feedCompleto() {
-  const cves = datosBase.map(enriquecer);
+// Filtrar por boletin (query ?boletin=). Sin filtro = todos.
+function filtrar(req) {
+  const b = req.query.boletin;
+  const base = b ? datosBase.filter((c) => c.boletin === b) : datosBase;
+  return base.map(enriquecer);
+}
+
+function buildMeta(cves, filtro) {
   const enKev = cves.filter((c) => c.kev.enKev);
   const explotados = cves.filter((c) => c.explotado || c.kev.enKev);
   const divulgados = cves.filter((c) => c.divulgado);
+  const bols = metaBase.boletines || [];
   return {
-    meta: {
-      ...metaBase,
-      generado: new Date().toISOString(),
-      ultimoRefreshKev: ultimoRefresh,
-      total: cves.length,
-      enKev: enKev.length,
-      explotados: explotados.length,
-      divulgados: divulgados.length,
-    },
-    cves,
+    boletines: bols,
+    filtro: filtro || null,
+    generado: new Date().toISOString(),
+    ultimoRefreshKev: ultimoRefresh,
+    total: cves.length,
+    enKev: enKev.length,
+    explotados: explotados.length,
+    divulgados: divulgados.length,
   };
 }
 
@@ -143,16 +149,19 @@ app.use((_req, res, next) => {
 });
 
 app.get('/', (_req, res) => {
+  const bols = (metaBase.boletines || []).map((b) => b.boletin);
   res.json({
     nombre: 'feed-cve-kev',
     descripcion: 'Feed publico de CVE del boletin Microsoft con cruce CISA KEV y EPSS',
-    boletin: metaBase.boletin || null,
+    totalCves: datosBase.length,
+    boletines: bols,
     ultimoRefresh: ultimoRefresh,
     endpoints: {
-      'GET /cves': 'feed completo (JSON)',
-      'GET /cves/feed.json': 'alias',
-      'GET /kev': 'solo CVEs en CISA KEV',
-      'GET /stats': 'resumen numerico',
+      'GET /cves?boletin=': 'feed completo; sin boletin = todos',
+      'GET /cves/feed.json?boletin=': 'alias',
+      'GET /kev?boletin=': 'solo CVEs en CISA KEV',
+      'GET /stats?boletin=': 'resumen numerico',
+      'GET /boletines': 'lista de boletines disponibles',
       'GET /salud': 'estado del servicio',
       'POST /refresh': 'forzar actualizacion de KEV/EPSS',
     },
@@ -160,26 +169,19 @@ app.get('/', (_req, res) => {
 });
 
 function serveFeed(req, res) {
-  res.json(feedCompleto());
+  const cves = filtrar(req);
+  res.json({ meta: buildMeta(cves, req.query.boletin), cves });
 }
 app.get('/cves', serveFeed);
 app.get('/cves/feed.json', serveFeed);
 
-app.get('/kev', (_req, res) => {
-  const cves = datosBase.map(enriquecer).filter((c) => c.kev.enKev);
-  res.json({
-    meta: {
-      ...metaBase,
-      generado: new Date().toISOString(),
-      ultimoRefreshKev: ultimoRefresh,
-      total: cves.length,
-    },
-    cves,
-  });
+app.get('/kev', (req, res) => {
+  const cves = filtrar(req).filter((c) => c.kev.enKev);
+  res.json({ meta: buildMeta(cves, req.query.boletin), cves });
 });
 
-app.get('/stats', (_req, res) => {
-  const cves = datosBase.map(enriquecer);
+app.get('/stats', (req, res) => {
+  const cves = filtrar(req);
   const porSeveridad = {};
   const porTipo = {};
   const porCriticidad = {};
@@ -189,7 +191,7 @@ app.get('/stats', (_req, res) => {
     porCriticidad[c.criticidad || 'N/A'] = (porCriticidad[c.criticidad || 'N/A'] || 0) + 1;
   }
   res.json({
-    meta: { ...metaBase, generado: new Date().toISOString(), ultimoRefreshKev: ultimoRefresh },
+    meta: buildMeta(cves, req.query.boletin),
     resumen: {
       total: cves.length,
       enKev: cves.filter((c) => c.kev.enKev).length,
@@ -203,11 +205,15 @@ app.get('/stats', (_req, res) => {
   });
 });
 
+app.get('/boletines', (_req, res) => {
+  res.json({ boletines: metaBase.boletines || [] });
+});
+
 app.get('/salud', (_req, res) => {
   res.json({
     ok: true,
-    boletin: metaBase.boletin || null,
     totalCves: datosBase.length,
+    boletines: (metaBase.boletines || []).length,
     ultimoRefresh: ultimoRefresh,
     refreshCadaHoras: REFRESH_MS / 3600000,
     uptime: Math.round(process.uptime()),
