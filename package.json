@@ -1,0 +1,15 @@
+{
+  "name": "feed-cve-kev",
+  "version": "1.0.0",
+  "description": "Feed publico de CVE del boletin Microsoft con cruce CISA KEV y EPSS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
