@@ -173,7 +173,9 @@ function enriquecer(cve) {
 
 function buildMeta(cves, filtro) {
   const enKev = cves.filter(c => c.kev.enKev);
-  const explotados = cves.filter(c => c.explotado || c.kev.enKev);
+  // Regla del proyecto: divulgacion = explotacion. Un CVE divulgado o en KEV
+  // cuenta como explotado para el conteo, aunque conserva su campo divulgado.
+  const explotados = cves.filter(c => c.explotado || c.kev.enKev || c.divulgado);
   const divulgados = cves.filter(c => c.divulgado);
   return {
     boletines: metaBase.boletines || [], filtro: filtro || null,
@@ -252,7 +254,8 @@ app.get('/', (req, res) => {
   }
   const bols = metaBase.boletines || [];
   const enKev = cacheEnriquecido.filter(c => c.kev.enKev).length;
-  const explotados = cacheEnriquecido.filter(c => c.explotado || c.kev.enKev).length;
+  const explotados = cacheEnriquecido.filter(c => c.explotado || c.kev.enKev || c.divulgado).length;
+  const divulgados = cacheEnriquecido.filter(c => c.divulgado).length;
   const opcionesBol = bols.map(b => `<option value="${b.boletin}">${b.boletin} (${b.totalCve} CVEs)</option>`).join('');
   res.type('html').send(`<!doctype html><html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -312,6 +315,7 @@ code{font-size:.8rem;background:var(--badge);padding:.15rem .4rem;border-radius:
   <div class="card"><div class="n">${bols.length}</div><div class="l">Boletines</div></div>
   <div class="card kev"><div class="n">${enKev}</div><div class="l">En CISA KEV</div></div>
   <div class="card"><div class="n">${explotados}</div><div class="l">Explotados</div></div>
+  <div class="card"><div class="n">${divulgados}</div><div class="l">Divulgados</div></div>
 </div>
 <hr class="sep">
 <h2>Descargar</h2>
@@ -406,14 +410,16 @@ async function procesar(file){
     const ms=Math.round(performance.now()-t0);
     ultimoResultado=data;
     const enKev=data.cves.filter(c=>c.kev&&c.kev.enKev).length;
-    const expl=data.cves.filter(c=>c.explotado||c.kev&&c.kev.enKev).length;
+    const expl=data.cves.filter(c=>c.explotado||c.divulgado||c.kev&&c.kev.enKev).length;
+    const div=data.cves.filter(c=>c.divulgado).length;
     status.innerHTML='<strong>'+ids.length+'</strong> CVEs procesados en <strong>'+ms+'ms</strong>';
     cardsDiv.innerHTML=
       '<div class="card"><div class="n">'+ids.length+'</div><div class="l">CVEs en archivo</div></div>'+
       '<div class="card" style="border-color:var(--accent)"><div class="n" style="color:var(--accent)">'+data.total+'</div><div class="l">En Microsoft</div></div>'+
       '<div class="card"><div class="n" style="color:#888">'+data.noEncontrados+'</div><div class="l">No encontrados</div></div>'+
       '<div class="card kev"><div class="n">'+enKev+'</div><div class="l">En KEV</div></div>'+
-      '<div class="card"><div class="n">'+expl+'</div><div class="l">Explotados</div></div>';
+      '<div class="card"><div class="n">'+expl+'</div><div class="l">Explotados</div></div>'+
+      '<div class="card"><div class="n">'+div+'</div><div class="l">Divulgados</div></div>';
     renderTabla(data,ids);
     btns.style.display='flex';
   }catch(e){status.textContent='Error: '+e.message}
@@ -568,7 +574,7 @@ app.get('/stats', (req, res) => {
     meta: buildMeta(cves, bol),
     resumen: {
       total: cves.length, enKev: cves.filter(c => c.kev.enKev).length,
-      explotados: cves.filter(c => c.explotado || c.kev.enKev).length,
+      explotados: cves.filter(c => c.explotado || c.kev.enKev || c.divulgado).length,
       divulgados: cves.filter(c => c.divulgado).length,
       ransomware: cves.filter(c => c.kev.ransomware).length,
     },
