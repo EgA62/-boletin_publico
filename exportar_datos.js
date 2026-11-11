@@ -31,12 +31,22 @@ function listarBoletines() {
 }
 
 function formatearCve(f) {
+  // Solo informacion del CVE (MSRC / CISA KEV / EPSS). Se excluyen a proposito
+  // los campos internos del analista: nota_analista, prioridad_manual,
+  // criticidad_manual y revision_* (estado/por/ts) no son publicos.
   return {
     cve: f.cve, titulo: f.titulo || '', producto: f.producto || '',
     tipo: f.tipo || '', severidad: f.severidad || '', cvss: f.cvss,
     vector: f.vector || '', criticidad: f.criticidad || '',
+    criticidadEfectiva: f.criticidad_efectiva || '',
     explotado: f.explotado === 'SI', divulgado: f.divulgado === 'SI',
+    explotacionActiva: f.explotacion_activa === 1,
+    explotabilidad: f.explotabilidad || '',
     epss: f.epss, epssPercentil: f.epss_percentil, publicado: f.publicado || '',
+    msrcRevisiones: f.msrc_revisiones ?? null,
+    msrcUltimaRevision: f.msrc_ultima_revision || '',
+    kevEnKev: f.kev === 1, kevFecha: f.kev_fecha || null,
+    kevPlazo: f.kev_plazo || null, kevRansomware: f.kev_ransomware === 1,
     boletin: f.boletin,
   };
 }

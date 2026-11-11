@@ -159,13 +159,21 @@ function enriquecer(cve) {
     cve: cve.cve, titulo: cve.titulo, producto: cve.producto,
     tipo: cve.tipo, severidad: cve.severidad, cvss: cve.cvss,
     vector: cve.vector, criticidad: cve.criticidad,
+    criticidadEfectiva: cve.criticidadEfectiva ?? null,
     explotado: cve.explotado, divulgado: cve.divulgado,
+    explotacionActiva: cve.explotacionActiva ?? false,
+    explotabilidad: cve.explotabilidad ?? '',
     epss: e ? e.epss : (cve.epss ?? null),
     epssPercentil: e ? e.percentil : (cve.epssPercentil ?? null),
     publicado: cve.publicado, boletin: cve.boletin,
+    msrcRevisiones: cve.msrcRevisiones ?? null,
+    msrcUltimaRevision: cve.msrcUltimaRevision ?? '',
     kev: {
-      enKev: !!k, fechaAgregado: k ? k.fecha : null,
-      plazo: k ? k.plazo : null, ransomware: k ? k.ransomware : false,
+      // KEV en vivo (CISA) con respaldo en los datos exportados.
+      enKev: k ? true : !!cve.kevEnKev,
+      fechaAgregado: k ? k.fecha : (cve.kevFecha || null),
+      plazo: k ? k.plazo : (cve.kevPlazo || null),
+      ransomware: k ? k.ransomware : !!cve.kevRansomware,
       accion: k ? k.accion : null,
     },
   };
